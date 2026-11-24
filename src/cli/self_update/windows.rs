@@ -218,25 +218,44 @@ pub(crate) fn msvc_check(opts: &InstallOpts<'_>, process: &Process) -> Option<Vs
         return None;
     }
 
-    let host_tuple = if let Some(tuple) = opts.default_host_tuple.as_ref() {
-        tuple.to_owned()
-    } else {
-        TargetTuple::from_host_or_build(process).to_string()
-    };
+    let host_tuple = msvc_host_tuple(opts, process);
     let installing_msvc = host_tuple.contains("msvc");
     let have_msvc = find_tool(&host_tuple, "cl.exe").is_some();
     if installing_msvc && !have_msvc {
         // Visual Studio build tools are required.
-        // If the user does not have Visual Studio installed and their host
-        // machine is i686 or x86_64 then it's OK to try an auto install.
+        // If the user does not have Visual Studio installed and we know which
+        // components their host needs then it's OK to try an auto install.
         // Otherwise a manual install will be required.
         let has_any_vs = find_vs_version().is_ok();
-        let is_x86 = host_tuple.contains("i686") || host_tuple.contains("x86_64");
-        if is_x86 && !has_any_vs {
+        if vs_tools_components(&host_tuple).is_some() && !has_any_vs {
             Some(VsInstallPlan::Automatic)
         } else {
             Some(VsInstallPlan::Manual)
         }
+    } else {
+        None
+    }
+}
+
+fn msvc_host_tuple(opts: &InstallOpts<'_>, process: &Process) -> String {
+    match opts.default_host_tuple.as_ref() {
+        Some(tuple) => tuple.to_owned(),
+        None => TargetTuple::from_host_or_build(process).to_string(),
+    }
+}
+
+/// Visual Studio components providing the linker and C runtime libraries
+/// for `host_tuple`, or `None` if automatic install isn't supported.
+fn vs_tools_components(host_tuple: &str) -> Option<&'static [&'static str]> {
+    if host_tuple.contains("i686") || host_tuple.contains("x86_64") {
+        Some(&["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"])
+    } else if host_tuple.contains("aarch64") {
+        // The native ARM64 tools, plus the x86/x64 tools so x86_64 targets
+        // and emulated x86_64 toolchains can also link.
+        Some(&[
+            "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        ])
     } else {
         None
     }
@@ -316,9 +335,15 @@ pub(crate) async fn try_install_msvc(
         // Display an interactive GUI focused on installing just the selected components.
         .arg("--focusedUi")
         // Add the English language pack
-        .args(["--addProductLang", "En-us"])
-        // Add the linker and C runtime libraries.
-        .args(["--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"]);
+        .args(["--addProductLang", "En-us"]);
+
+    // Add the linker and C runtime libraries.
+    let host_tuple = msvc_host_tuple(opts, process);
+    let components = vs_tools_components(&host_tuple)
+        .with_context(|| format!("no Visual Studio components known for host {host_tuple}"))?;
+    for component in components {
+        cmd.args(["--add", component]);
+    }
 
     // It's possible an earlier or later version of the Windows SDK has been
     // installed separately from Visual Studio so installing it can be skipped.
@@ -870,6 +895,24 @@ mod tests {
             Err(e) if e.code() == WIN32_ERROR(ERROR_FILE_NOT_FOUND).to_hresult() => {}
             Err(e) => panic!("failed to clear PATH: {e}"),
         }
+    }
+
+    #[test]
+    fn vs_tools_components_for_host() {
+        let x64 = ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"].as_slice();
+        assert_eq!(vs_tools_components("x86_64-pc-windows-msvc"), Some(x64));
+        assert_eq!(vs_tools_components("i686-pc-windows-msvc"), Some(x64));
+        assert_eq!(
+            vs_tools_components("aarch64-pc-windows-msvc"),
+            Some(
+                [
+                    "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(vs_tools_components("thumbv7a-pc-windows-msvc"), None);
     }
 
     #[test]

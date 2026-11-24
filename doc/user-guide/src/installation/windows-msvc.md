@@ -6,6 +6,7 @@ For `msvc` targets these can be acquired through Visual Studio.
 ## Automatic install
 
 If you don't have Visual Studio already installed then [rustup-init] will offer to automatically install the prerequisites.
+On ARM64 Windows this includes both the ARM64 and x86/x64 MSVC build tools.
 Doing so means you can skip the rest of this page.
 However, it installs Visual Studio Community edition which may not be appropriate for all users.
 It is free for individuals, academic and open source use, but not for other uses, such as in proprietary enterprise software.
